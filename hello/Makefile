@@ -1,6 +1,12 @@
-all:
-	g++ -static -I../../cl-runtime/ gpu-hello.cpp -L../../cl-runtime/64b/ -lOpenCL -o hello-prog
+prog = hello
+
+all: host kernel
+
+host:
+	g++ -static -I../../cl-runtime/ $(prog).cpp -L../../cl-runtime/64b/ -lOpenCL -o $(prog)
 kernel:
-	clc2 --enable-hsail-extensions --cl-std=CL2.0 gpu-hello-kernel.cl -o my_kernel.fe.bc
-	llvm-link my_kernel.fe.bc -l /opt/rocm/hlc3.2/lib/builtins-hsail.bc -o my_kernel.linked.bc
-	opt -O3 -gpu -whole -verify my_kernel.linked.bc -o my_kernel.opt.bc
+	clc2 --enable-hsail-extensions --cl-std=CL2.0 $(prog)-kernel.cl -o $(prog).fe.bc
+	llvm-link $(prog).fe.bc -l /opt/rocm/hlc3.2/lib/builtins-hsail.bc -o $(prog).linked.bc
+	opt -O3 -gpu -whole -verify $(prog).linked.bc -o $(prog).opt.bc
+	llc -filetype=obj -hsail-enable-gcn=0 -march=hsail-64 $(prog).opt.bc -o $(prog)_kernel.asm
+	rm $(prog).fe.bc $(prog).linked.bc $(prog).opt.bc
