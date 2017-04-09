@@ -38,7 +38,8 @@ __kernel void read_kernel(size_t code_size,
                           __global char *code_in,
                           __global int *key_arr,
                           __global char *msg_out,
-                          __global int *chars_decoded)
+                          __global int *chars_decoded,
+                          hsa_signal_t dat_sig)
 {
     size_t gid = get_global_id(0);
     size_t my_idx = gid % code_size;
