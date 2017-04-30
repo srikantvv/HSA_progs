@@ -1,38 +1,3 @@
-/*
- * Copyright (c) 2015 Advanced Micro Devices, Inc.
- * All rights reserved.
- *
- * For use for simulation and test purposes only
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- * this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- * this list of conditions and the following disclaimer in the documentation
- * and/or other materials provided with the distribution.
- *
- * 3. Neither the name of the copyright holder nor the names of its contributors
- * may be used to endorse or promote products derived from this software
- * without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- *
- * Author: Marc Orr, Brad Beckmann
- */
-
 #include <CL/cl.h>
 #include <malloc.h>
 
@@ -50,12 +15,13 @@ void *m5_mem = (void*)0xffffc90000000000;
 #define SUCCESS 0
 #define FAILURE 1
 
+#include "aes_benchmark.h"
 // OpenCL datastructures
 cl_context       context;
 cl_device_id     *devices;
 cl_command_queue commandQueue;
 cl_program       program;
-cl_kernel        readKernel;
+cl_kernel        kernel;
 
 // Application datastructures
 const int CACHE_LINE_SIZE = 64;
@@ -68,30 +34,6 @@ const char *code = "hello";
 int *keys;
 char *msg;
 int chars_decoded = 0;
-
-/*
-    Setup data structures for application/algorithm
-*/
-int
-setupDataStructs()
-{
-    msg = (char *)memalign(CACHE_LINE_SIZE, (grid_size + 1) * sizeof(char));
-    if (msg == NULL) {
-        printf("%s:%d: error: %s\n", __FILE__, __LINE__,
-               "could not allocate host buffers\n");
-       exit(-1);
-    }
-    msg[grid_size] = '\0';
-
-    keys = (int *)memalign(CACHE_LINE_SIZE, code_size * sizeof(int));
-    keys[0] = 23;
-    keys[1] = 0;
-    keys[2] = 0;
-    keys[3] = 0;
-    keys[4] = 0;
-
-    return SUCCESS;
-}
 
 /* Setup OpenCL data structures */
 int
@@ -195,7 +137,7 @@ setupOpenCL()
         return FAILURE;
     }
 
-    readKernel = clCreateKernel(program, "read_kernel", &status);
+    kernel = clCreateKernel(program, "read_kernel", &status);
     if (status != CL_SUCCESS) {
         printf("Error: Creating readKernel from program. (clCreateKernel)\n");
         return FAILURE;
@@ -211,58 +153,21 @@ runCLKernel(cl_kernel kernel)
 {
     cl_int   status;
     cl_event event;
-    size_t globalThreads[1] = {grid_size};
-    size_t localThreads[1] = {work_group_size};
 
-    // 1. Set arguments
-    // 1a. code size
-    size_t code_size = strlen(code);
-    status = clSetKernelArg(kernel, 0, sizeof(size_t), &code_size);
-    if (status != CL_SUCCESS) {
-        printf("Error: Setting kernel argument. (code_size)\n");
-        return FAILURE;
-    }
+    cl_int ret;
+  
+    int num_blocks = text_length_ / 16;
+    size_t global_dimensions[] = {static_cast<size_t>(num_blocks)};
+    size_t local_dimensions[] = {64};
+  
+    ret = clSetKernelArg(kernel, 0, sizeof(cl_mem), &dev_ciphertext_);
+  
+    ret = clSetKernelArg(kernel, 1, sizeof(cl_mem), &dev_key_);
+  
+    ret = clEnqueueNDRangeKernel(commandQueue, kernel, 1, NULL, global_dimensions,
+                                 local_dimensions, 0, NULL, &event);
 
-    // 1b. code
-    status = clSetKernelArg(kernel, 1, sizeof(char *), (void *)&code);
-    if (status != CL_SUCCESS) {
-        printf("Error: Setting kernel argument. (code_in)\n");
-        return FAILURE;
-    }
-
-    // 1c. keys
-    printf("keys = %p, &keys = %p, keys[0] = %d\n", keys, &keys, keys[0]);
-    status = clSetKernelArg(kernel, 2, sizeof(int *), (void *)&keys);
-    if (status != CL_SUCCESS) {
-        printf("Error: Setting kernel argument. (key_arr)\n");
-        return FAILURE;
-    }
-
-    // 1d. msg
-    status = clSetKernelArg(kernel, 3, sizeof(char *), (void *)&msg);
-    if (status != CL_SUCCESS) {
-        printf("Error: Setting kernel argument. (memOut)\n");
-        return FAILURE;
-    }
-
-    // 1e. chars_decoded
-    int *chars_decoded_ptr = &chars_decoded;
-    status = clSetKernelArg(kernel, 4, sizeof(int *),
-                            (void *)&chars_decoded_ptr);
-    if (status != CL_SUCCESS) {
-        printf("Error: Setting kernel argument. (memOut)\n");
-        return FAILURE;
-    }
-
-#ifdef KVM_SWITCH
-    m5_switchcpu();
-#endif
-
-    // 2. Launch kernel
-    status = clEnqueueNDRangeKernel(commandQueue, kernel, 1, NULL,
-                                    globalThreads, localThreads, 0, NULL,
-                                    &event);
-    if (status != CL_SUCCESS) {
+    if (ret != CL_SUCCESS) {
         printf("Error: Enqueue failed. (clEnqueueNDRangeKernel)\n");
         return FAILURE;
     }
@@ -290,7 +195,7 @@ int
 cleanupCL()
 {
     cl_int status;
-    status = clReleaseKernel(readKernel);
+    status = clReleaseKernel(kernel);
     if (status != CL_SUCCESS) {
         printf("Error: In clReleaseKernel \n");
         return FAILURE;
@@ -314,30 +219,207 @@ cleanupCL()
     return SUCCESS;
 }
 
+void Cleanup() {
+  free(plaintext_);
+  free(ciphertext_);
+  cl_int ret;
+  ret = clReleaseMemObject(dev_ciphertext_);
+  ret = clReleaseMemObject(dev_key_);
+}
+
+void CopyDataToDevice() {
+  cl_int ret;
+  ret = clEnqueueWriteBuffer(commandQueue, dev_ciphertext_, CL_TRUE, 0,
+                             text_length_, ciphertext_, 0, NULL, NULL);
+
+  ret = clEnqueueWriteBuffer(commandQueue, dev_key_, CL_TRUE, 0,
+                             kExpandedKeyLengthInBytes, expanded_key_, 0, NULL,
+                             NULL);
+}
+
+void CopyDataBackFromDevice() {
+  cl_int ret;
+
+  ret = clEnqueueReadBuffer(commandQueue, dev_ciphertext_, CL_TRUE, 0,
+                            text_length_, ciphertext_, 0, NULL, NULL);
+}
+
+
+
+void LoadPlaintext() {
+  FILE *input_file = fopen(input_file_name_.c_str(), "r");
+  if (!input_file) {
+    fprintf(stderr, "Fail to open input file.\n");
+    exit(1);
+  }
+
+  // Get the size of file
+  fseek(input_file, 0L, SEEK_END);
+  uint64_t file_size = ftell(input_file);
+  fseek(input_file, 0L, SEEK_SET);
+
+  // 2 char per hex number
+  text_length_ = file_size / 2;
+  plaintext_ = reinterpret_cast<uint8_t *>(malloc(text_length_));
+
+  uint64_t index = 0;
+  unsigned int byte;
+  while (fscanf(input_file, "%02x", &byte) == 1) {
+    plaintext_[index] = static_cast<uint8_t>(byte);
+    index++;
+  }
+
+  fclose(input_file);
+}
+
+void LoadKey() {
+  FILE *key_file = fopen(key_file_name_.c_str(), "r");
+  if (!key_file) {
+    fprintf(stderr, "Fail to open key file.\n");
+    exit(1);
+  }
+
+  unsigned int byte;
+  for (int i = 0; i < kKeyLengthInBytes; i++) {
+    if (!fscanf(key_file, "%02x", &byte)) {
+      fprintf(stderr, "Error in key file.\n");
+      exit(1);
+    }
+    key_[i] = static_cast<uint8_t>(byte);
+  }
+
+  fclose(key_file);
+}
+
+void InitiateCiphertext(uint8_t **ciphertext) {
+  *ciphertext = reinterpret_cast<uint8_t *>(malloc(text_length_));
+  memcpy(*ciphertext, plaintext_, text_length_);
+}
+
+void DumpText(uint8_t *text) {
+  printf("Text: ");
+  for (uint64_t i = 0; i < text_length_; i++) {
+    printf("%02x ", text[i]);
+  }
+  printf("\n");
+}
+
+void DumpKey() {
+  printf("Key: ");
+  for (int i = 0; i < kKeyLengthInBytes; i++) {
+    printf("%02x ", key_[i]);
+  }
+  printf("\n");
+}
+
+void DumpExpandedKey() {
+  printf("Expanded key: ");
+  for (int i = 0; i < kExpandedKeyLengthInWords; i++) {
+    printf("\nword[%d]: %08x ", i, expanded_key_[i]);
+  }
+  printf("\n");
+}
+
+void WordToBytes(uint32_t word, uint8_t *bytes) {
+  bytes[0] = (word & 0xff000000) >> 24;
+  bytes[1] = (word & 0x00ff0000) >> 16;
+  bytes[2] = (word & 0x0000ff00) >> 8;
+  bytes[3] = (word & 0x000000ff) >> 0;
+}
+
+uint32_t BytesToWord(uint8_t *bytes) {
+  return (bytes[0] << 24) + (bytes[1] << 16) + (bytes[2] << 8) + bytes[3];
+}
+
+uint32_t RotateWord(uint32_t word) {
+  uint32_t after_rotation;
+  uint8_t bytes[5];
+  WordToBytes(word, bytes);
+  bytes[4] = bytes[0];
+
+  after_rotation = BytesToWord(bytes + 1);
+  return after_rotation;
+}
+
+uint32_t SubWord(uint32_t word) {
+  uint32_t after_subword;
+  uint8_t bytes[4];
+
+  WordToBytes(word, bytes);
+
+  for (int i = 0; i < 4; i++) {
+    bytes[i] = s[bytes[i]];
+  }
+
+  after_subword = BytesToWord(bytes);
+  return after_subword;
+}
+
+void ExpandKey() {
+  for (int i = 0; i < kKeyLengthInWords; i++) {
+    expanded_key_[i] = BytesToWord(key_ + 4 * i);
+  }
+
+  uint32_t temp;
+  for (int i = kKeyLengthInWords; i < kExpandedKeyLengthInWords; i++) {
+    temp = expanded_key_[i - 1];
+
+    if (i % kKeyLengthInWords == 0) {
+      uint32_t after_rotate_word = RotateWord(temp);
+      uint32_t after_sub_word = SubWord(after_rotate_word);
+      uint32_t rcon_word = Rcon[i / kKeyLengthInWords] << 24;
+      temp = after_sub_word ^ rcon_word;
+    } else if (i % kKeyLengthInWords == 4) {
+      temp = SubWord(temp);
+    }
+    expanded_key_[i] = expanded_key_[i - kKeyLengthInWords] ^ temp;
+  }
+}
+
+void Run() {
+  ExpandKey();
+  CopyDataToDevice();
+    // Run the CL program
+  runCLKernel(kernel);
+  CopyDataBackFromDevice();
+}
+
+void Initialize() {
+  LoadPlaintext();
+  LoadKey();
+  InitiateCiphertext(&ciphertext_);
+  // Setup
+  cl_int err;
+  dev_ciphertext_ =
+      clCreateBuffer(context, CL_MEM_READ_WRITE, text_length_, NULL, &err);
+
+  dev_key_ = clCreateBuffer(context, CL_MEM_READ_ONLY,
+                            kExpandedKeyLengthInBytes, NULL, &err);
+}
+
 int
 main(int argc, char * argv[])
 {
-    // Initialize Host application
-    if (setupDataStructs() != SUCCESS) {
-        return FAILURE;
+    if (argc < 3) {
+        printf("Usage: ./aes <input file> < key file>\n");
+        return 1;
     }
 
-    // Initialize OpenCL resources
+    SetInputFileName(argv[1]);
+    SetKeyFileName(argv[2]);
+
     if (setupOpenCL() != SUCCESS) {
         return FAILURE;
     }
-
-    // Run the CL program
-    if (runCLKernel(readKernel) != SUCCESS) {
-        return FAILURE;
-    }
-    printf("the gpu says:\n");
-    printf("%s\n", msg);
-
+    // Initialize Host application
+    Initialize();
+    Run();
     // Releases OpenCL resources
     if (cleanupCL()!= SUCCESS) {
         return FAILURE;
     }
-
+    Cleanup();
     return SUCCESS;
 }
+
+

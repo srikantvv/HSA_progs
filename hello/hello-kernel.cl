@@ -33,7 +33,6 @@
  * Author: Marc Orr
  */
 
-#include "hsa.h"
 
 __kernel void read_kernel(size_t code_size,
                           __global char *code_in,
